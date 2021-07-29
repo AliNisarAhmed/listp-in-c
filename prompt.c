@@ -33,14 +33,21 @@ typedef struct
 {
 	int type;
 	long num;
-	int err;
+	// Error and Symbol type have some string data
+	char* err;
+	char* sym;
+	// Pointer to Pointers to lval, and their count
+	int count;
+	struct lval** cell;
 } lval;
 
 // Create Enum of possible lval values
 enum
 {
 	LVAL_NUM,
-	LVAL_ERR
+	LVAL_ERR,
+	LVAL_SYM,
+	LVAL_SEXPR
 };
 
 // Create Enum of possible error types
@@ -51,23 +58,76 @@ enum lval_err_types
 	LERR_BAD_NUM
 };
 
-// create a new number type lval
-lval lval_num(long x)
+// contruct a pointer to a new Number lval
+lval* lval_num(long x)
 {
-	lval v;
-	v.type = LVAL_NUM;
-	v.num = x;
+	lval* v = malloc(sizeof(lval));
+	v->type = LVAL_NUM;
+	v->num = x;
 	return v;
 }
 
-// Create a new error type lval
-lval lval_err(int x)
+// Construct a pointer to a new Error lval
+lval* lval_err(char* m)
 {
-	lval v;
-	v.type = LVAL_ERR;
-	v.err = x;
+	lval* v = malloc(sizeof(lval));
+	v->type = LVAL_ERR;
+	v->err = malloc(strlen(m) + 1);
+	strcpy(v->err, m);
 	return v;
 }
+
+// Construct a pointer to a new Symbol lval
+lval* lval_sym(char* s)
+{
+	lval* v = malloc(sizeof(lval));
+	v->type = LVAL_SYM;
+	v->sym = malloc(strlen(s) + 1);
+	strcpy(v->sym, s);
+	return v;
+}
+
+// Construct a pointer to a new empty Sexpr lval
+lval* lval_sexpr(void)
+{
+	lval* v = malloc(sizeof(lval));
+	v->type = LVAL_SYM;
+	v->count = 0;
+	v->cell = NULL;
+	return v;
+}
+
+// Delete lval
+void lval_del(lval* v)
+{
+	switch(v->type) {
+		// No need to do anything for the Number lval as `cell` and other pointers will be empty
+		case LVAL_NUM:
+			break;
+
+		case LVAL_ERR:
+			free(v->err);
+			break;
+
+		case LVAL_SYM:
+			free(v->sym);
+			break;
+
+		// if Sexpr, then delete all elements inside
+		case LVAL_SEXPR:
+			for (int i = 0; i < v->count; i++) {
+				lval_del(v->cell[i]);
+			}
+			// Also free the memory allocated to contain the pointers
+			free(v->cell);
+
+		break;
+	}
+
+	// finally, free the memory allocated for the "lval" struct itself
+	free(v);
+}
+
 
 // Print an lval
 void lval_print(lval v)
@@ -101,6 +161,61 @@ void lval_println(lval v)
 	lval_print(v);
 	putchar('\n');
 }
+
+lval* lval_read_num(mpc_ast_t* t) {
+	errno = 0;
+	long x = strtol(t->contents, NULL, 10);
+	return errno != ERANGE ?
+		lval_num(x) : lval_err("invalid number");
+}
+
+lval* lval_read(mpc_ast_t* t) {
+	// if Symbol or number return conversion to that type
+	if (strstr(t->tag, "number")) {
+		return lval_read_num(t);
+	}
+
+	if (strstr(t->tag, "symbol")) {
+		return lval_sym(t->contents);
+	}
+
+	// if root or sexpr, then create empty list
+	lval* x = NULL;
+
+	if (strcmp(t->tag, ">") == 0) {
+		x = lval_sexpr();
+	}
+
+	if (strstr(t->tag, "sexpr")) {
+		x = lval_sexpr();
+	}
+
+	// fill the list above with any valid expression contained within
+	for (int i = 0; i < t->children_num; i++) {
+		if (strcmp(t->children[i]->contents, "(" ) == 0) {
+			continue;
+		}
+		if (strcmp(t->children[i]->contents, ")" == 0)) {
+			continue;
+		}
+
+		if (strcmp(t->children[i]->tag, "regex") == 0) {
+			continue;
+		}
+
+		x = lval_add(x, lval_read(t->children[i]));
+	}
+
+	return x;
+}
+
+lval* lval_add(lval* v, lval* x) {
+	v->count++;
+	v->cell = realloc(v->cell, sizeof(lval*) * v->count);
+	v->cell[v->count - 1] = x;
+	return v;
+}
+
 
 lval eval_op(lval x, char *op, lval y)
 {
@@ -254,18 +369,21 @@ int main(int argc, char **argv)
 	// Create some parsers
 	mpc_parser_t *Number = mpc_new("number");
 	mpc_parser_t *Operator = mpc_new("operator");
+	mpc_parser_t *Symbol = mpc_new("symbol");
+	mpc_parser_t *Sexpr = mpc_new("sexpr");
 	mpc_parser_t *Expr = mpc_new("expr");
 	mpc_parser_t *Lispy = mpc_new("lispy");
 
 	// Define the parers with the following language
 
 	mpca_lang(MPCA_LANG_DEFAULT,
-		"                                                \
-			number : /-?[0-9]+[.]?[0-9]*/ ;                          \
-			operator : '+' | '*' | '-' | '/' | '\%' | '^' |\"add\" | \"sub\" | \"mul\" | \"div\" ;       \
-			expr : <number> | '(' <operator> <expr>+ ')' | '-' <expr> ; \
-			lispy : /^/ <operator> <expr>+ /$/ ;           \
-		", Number, Operator, Expr, Lispy);
+		"                                                             \
+			number : /-?[0-9]+[.]?[0-9]*/ ;                             \
+			symbol : '+' | '*' | '-' | '/' | '\%' | '^' ;               \
+			sexpr : '(' <expr>* ')'   ;                                 \
+			expr : <number> | <symbol> | <sexpr> ; \
+			lispy : /^/ <expr>* /$/ ;                        \
+		", Number, Symbol, Sexpr, Expr, Lispy);
 
 	puts("Lispy Version 0.0.0.0.1");
 	puts("Press Ctrl+c to Exit\n");
@@ -302,7 +420,7 @@ int main(int argc, char **argv)
 		free(input);
 	}
 
-	mpc_cleanup(4, Number, Operator, Expr, Lispy);
+	mpc_cleanup(5, Number, Symbol, Sexpr, Expr, Lispy);
 
 	return 0;
 }
