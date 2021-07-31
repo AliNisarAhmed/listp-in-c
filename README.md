@@ -6,7 +6,7 @@
 
 `cc -std=c99 -Wall prompt.c -ledit -o prompt`
 
-`cc -std=c99 -Wall parsing.c mpc.c -ledit -lm -o prompt`
+`cc -std=c99 -Wall prompt.c mpc.c -ledit -lm -o prompt`
 
 ---
 
@@ -104,3 +104,7 @@ union Data {
 https://www.quora.com/When-is-it-a-good-idea-to-use-union-instead-of-struct-in-C-programming?share=1
 
 Structs are like `Product` tyes, while Unions are like `Sum` types.
+
+### Forward function declarations
+
+A forward declaration is a function declaration without a function body. It tells the compiler you're going to define the function later, possibly in a different file, and lets you use a function before it's defined
